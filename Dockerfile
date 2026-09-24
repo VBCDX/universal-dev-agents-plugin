@@ -19,7 +19,12 @@ COPY package.json ./
 COPY bin/a2a-server.js ./bin/a2a-server.js
 COPY src/a2a ./src/a2a
 COPY src/roles ./src/roles
+COPY src/skills ./src/skills
 COPY assets/roles ./assets/roles
+# The catalogue's document tree, read at runtime by src/skills/catalogue.js
+# (SKILLS_DIR = <root>/skills). Same runtime-data role as assets/roles above;
+# without it the /skills routes boot but serve an empty catalogue.
+COPY skills ./skills
 
 # Run as the image's built-in non-root user. The server only reads files.
 USER node

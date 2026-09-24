@@ -164,6 +164,43 @@ test("the server card describes the directory and is itself a valid card", () =>
   assert.match(card.description, /discovery/i);
 });
 
+test("every per-agent card discloses it is discovery-only in its description", () => {
+  // A consumer that fetches only /agents/<id>.json must be able to tell, from
+  // that response alone, that the interface is not a live message endpoint.
+  for (const [id, card] of allAgentCards(BASE)) {
+    assert.match(
+      card.description,
+      /discovery card only; not a live a2a message endpoint\./i,
+      `${id}: description does not disclose discovery-only`,
+    );
+    // The role's own description text is still present (note is appended, not
+    // replaced): the card carries both the role summary and the disclaimer.
+    const roleDescription = getRole(id).descriptor.description.trimEnd();
+    assert.ok(
+      card.description.startsWith(roleDescription),
+      `${id}: role description was replaced instead of appended to`,
+    );
+  }
+});
+
+test("every per-agent card declares the discovery-only extension (required:false)", () => {
+  for (const [id, card] of allAgentCards(BASE)) {
+    assert.ok(Array.isArray(card.capabilities.extensions), `${id}: no extensions array`);
+    const ext = card.capabilities.extensions.find(
+      (e) => e.uri === "urn:a2a:extension:discovery-only",
+    );
+    assert.ok(ext, `${id}: discovery-only extension missing`);
+    assert.equal(ext.required, false, `${id}: discovery-only extension must not be required`);
+    assert.equal(typeof ext.description, "string");
+    assert.ok(ext.description.length > 0, `${id}: extension has empty description`);
+    // The honesty property: adding the extension must not turn on a real-behaviour
+    // flag we do not implement.
+    for (const flag of ["streaming", "pushNotifications", "extendedAgentCard"]) {
+      assert.notEqual(card.capabilities[flag], true, `${id}: must not advertise ${flag}`);
+    }
+  }
+});
+
 test("skill tags are vendor-neutral (generic categories, not backend names)", () => {
   for (const [id, role] of allRoles()) {
     const card = buildAgentCard(role, BASE);

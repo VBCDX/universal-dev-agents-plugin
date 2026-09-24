@@ -67,7 +67,7 @@ export function parseInitArgs(argv) {
     }
   }
 
-  if (!opts.harness) throw configError("--harness is required (dsh|claude|codex|opencode).");
+  if (!opts.harness) throw configError("--harness is required (dsh|claude|codex|opencode|hermes).");
   if (!HARNESSES.includes(opts.harness)) throw configError(`Unsupported --harness: ${opts.harness}.`);
   if (!opts.env) throw configError("--env is required (an absolute path to the literal config file).");
   if (!isAbsolute(opts.env)) throw configError("--env must be an absolute path.");
@@ -76,6 +76,10 @@ export function parseInitArgs(argv) {
   if (opts.harness === "dsh") {
     if (opts.scope !== null) throw configError("DSH does not accept an explicit --scope.");
     opts.scope = "dsh";
+  } else if (opts.harness === "hermes") {
+    // Hermes agents are profiles under HERMES_HOME; there is no project-scoped profile.
+    if (opts.scope !== null) throw configError("Hermes installs one profile per role under HERMES_HOME and does not accept --scope.");
+    opts.scope = "user";
   } else {
     if (opts.scope === null) opts.scope = "user";
     if (!["user", "project"].includes(opts.scope)) {

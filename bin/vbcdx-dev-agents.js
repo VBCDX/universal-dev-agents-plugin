@@ -2,7 +2,7 @@
 // Executable entrypoint for @vbcdx/dev-agents.
 //
 // Usage:
-//   vbcdx-dev-agents init --harness=<dsh|claude|codex|opencode> --env=<abs-path>
+//   vbcdx-dev-agents init --harness=<dsh|claude|codex|opencode|hermes> --env=<abs-path>
 //                         [--agents=<list>] [--scope=<user|project>]
 //                         [--profile=<name>] [--force] [--dry-run] [--quiet]
 //   vbcdx-dev-agents --help
@@ -17,7 +17,7 @@ import { EXIT, InstallerError } from "../src/errors.js";
 const HELP = `vbcdx-dev-agents — install the sixteen canonical VBCDX dev agents
 
 Commands:
-  init --harness=<dsh|claude|codex|opencode> --env=<absolute-config-path>
+  init --harness=<dsh|claude|codex|opencode|hermes> --env=<absolute-config-path>
        [--agents=<comma,separated,ids>]   default: all sixteen
        [--scope=<user|project>]           default: user (not for dsh)
        [--profile=<name>]                 dsh only, default: web

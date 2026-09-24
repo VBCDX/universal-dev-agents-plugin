@@ -9,9 +9,9 @@ import { existsSync, statSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { getRole } from "./roles/index.js";
 import { loadConfig } from "./config/config.js";
-import { loadIntegrations, SERVICE_CONTRACT } from "./config/integrations.js";
+import { loadIntegrations, SERVICE_CONTRACT, isCleartextOffHost } from "./config/integrations.js";
 import { collectCredentialTriples, classifyTriple, serializeCredentialFile } from "./credentials/writer.js";
-import { renderFlat, renderDsh, resolveHarnessDir } from "./renderers/index.js";
+import { renderFlat, renderDsh, renderHermes, resolveHarnessDir, resolveHermesProfileDir } from "./renderers/index.js";
 import { sha256 } from "./fs/safe-writer.js";
 import { parseEnvText } from "./config/env-parser.js";
 import { configError, credentialError, conflictError, filesystemError } from "./errors.js";
@@ -124,6 +124,16 @@ export function buildPlan(args, entries, { cwd = process.cwd() } = {}) {
     warnings.push(`Credential file for unknown role ${role} will be written, but no corresponding agent is installed.`);
   }
 
+  // An http service gets every bound role's bearer token on each call.
+  if (integrations) {
+    for (const [service, svc] of Object.entries(integrations.services)) {
+      if (svc.transport !== "http" || !svc.url) continue;
+      if (isCleartextOffHost(svc.url)) { // only reachable with "allow_cleartext": true
+        warnings.push(`Integration ${service} sends each role's bearer token in cleartext to ${new URL(svc.url).host} (allow_cleartext); use https unless that host is on a trusted private network.`);
+      }
+    }
+  }
+
   // Cross-check integration credential mappings for selected roles.
   if (integrations) {
     for (const [service, svc] of Object.entries(integrations.services)) {
@@ -145,7 +155,17 @@ export function buildPlan(args, entries, { cwd = process.cwd() } = {}) {
   // Phase: generated definitions (rendered content + destinations).
   const generated = [];
   const dsh = harness === "dsh" ? buildDshStaging(config, profile, roles, integrations, force) : null;
-  if (harness !== "dsh") {
+  if (harness === "hermes") {
+    if (!config.hermes) {
+      warnings.push("No Hermes model routing configured (VBCDX_AGENTS_HERMES_BASE_URL/_MODEL): profiles are written without a model section and will not run until one is configured.");
+    }
+    for (const role of roles) {
+      const dir = resolveHermesProfileDir(config.harnessRoot, role.id);
+      for (const f of renderHermes(role, { integrations, hermes: config.hermes }).files) {
+        generated.push({ role: role.id, harness, destination: join(dir, f.name), content: f.content, digest: sha256(Buffer.from(f.content)), mode: f.mode });
+      }
+    }
+  } else if (harness !== "dsh") {
     const dir = resolveHarnessDir(harness, scope, { harnessRoot: config.harnessRoot, worktreeRoot });
     for (const role of roles) {
       const out = renderFlat(harness, role, { integrations });

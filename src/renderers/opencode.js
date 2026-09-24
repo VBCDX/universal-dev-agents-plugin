@@ -20,7 +20,7 @@ export function renderOpencode(role, { integrations } = {}) {
   const bindings = boundServiceTools(role.descriptor, integrations);
   if (bindings.length) {
     const tools = {};
-    for (const b of bindings) for (const t of b.tools) tools[mcpToolId("opencode", b.server, t)] = true;
+    for (const b of bindings) for (const t of b.tools) tools[mcpToolId("opencode", b.server, (b.toolPrefix || "") + t)] = true;
     frontmatter.tools = tools;
   }
   const fm = yamlStringify(frontmatter).trimEnd();
