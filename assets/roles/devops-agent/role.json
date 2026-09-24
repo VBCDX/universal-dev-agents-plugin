@@ -43,7 +43,8 @@
       "create_comment",
       "update_comment",
       "create_pull_request",
-      "update_pull_request"
+      "update_pull_request",
+      "create_repository"
     ],
     "coolify": [
       "health",

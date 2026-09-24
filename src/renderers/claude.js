@@ -14,7 +14,7 @@ export function renderClaude(role, { integrations } = {}) {
   const tools = claudeLocalTools(cap);
   const bindings = boundServiceTools(role.descriptor, integrations);
   for (const b of bindings) {
-    for (const t of b.tools) tools.push(mcpToolId("claude", b.server, t));
+    for (const t of b.tools) tools.push(mcpToolId("claude", b.server, (b.toolPrefix || "") + t));
   }
   // Serialize the frontmatter with a real YAML serializer so a description or
   // prompt can never break the document; tools is the documented comma list.

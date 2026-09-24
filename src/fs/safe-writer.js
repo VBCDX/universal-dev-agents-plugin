@@ -11,7 +11,9 @@
 //     and again at mutation time to defeat TOCTOU swaps).
 //   * Existing regular targets are owned by the effective user; secret files
 //     additionally require 0600 in a 0700 parent, and the restrictive mode is
-//     applied to the temp file BEFORE any secret content is written.
+//     applied to the temp file BEFORE any secret content is written. These
+//     checks read an OPEN DESCRIPTOR (fstat) opened O_NOFOLLOW, not a re-resolved
+//     path, so the object validated is provably the object opened (TOCTOU-safe).
 //   * Writes are atomic: content goes to a same-directory temp file, is fsynced
 //     and renamed over the destination. A failure cleans up its temp file.
 //   * Locks are exclusive per destination, acquired in a stable (sorted) order
@@ -23,7 +25,7 @@
 
 import {
   openSync, closeSync, writeSync, fsyncSync, renameSync, unlinkSync, mkdirSync,
-  lstatSync, statSync, realpathSync, readFileSync, constants as fsc,
+  lstatSync, fstatSync, readFileSync, constants as fsc,
 } from "node:fs";
 import { dirname, join, isAbsolute, sep } from "node:path";
 import { createHash } from "node:crypto";
@@ -86,34 +88,129 @@ export function ensureDir(absDir, mode = 0o755) {
 }
 
 /**
+ * Validate that `dir` is a real directory of mode 0700 owned by the effective
+ * user, inspecting an OPEN DIRECTORY DESCRIPTOR (fstat) rather than re-resolving
+ * the path with lstat. O_NOFOLLOW rejects a symlinked directory and O_DIRECTORY
+ * rejects a non-directory atomically at open() — so a component swapped in after
+ * an earlier path walk cannot redirect what we check (fd-based TOCTOU defence,
+ * issue #8). `badModeMsg`/`badOwnerMsg` let each caller keep its own wording.
+ */
+function validateSecretDir(dir, { badModeMsg, badOwnerMsg }) {
+  let fd;
+  try {
+    fd = openSync(dir, fsc.O_RDONLY | fsc.O_DIRECTORY | fsc.O_NOFOLLOW);
+  } catch (err) {
+    // A symlinked dir (ELOOP), a non-directory (ENOTDIR), an unreadable dir
+    // (EACCES — therefore not a readable 0700 dir) or an absent one (ENOENT)
+    // all fail the private-directory requirement.
+    if (err && ["ELOOP", "ENOTDIR", "EACCES", "ENOENT"].includes(err.code)) {
+      throw filesystemError(badModeMsg);
+    }
+    throw err;
+  }
+  try {
+    const st = fstatSync(fd);
+    if ((st.mode & 0o777) !== 0o700) throw filesystemError(badModeMsg);
+    if (st.uid !== process.getuid()) throw filesystemError(badOwnerMsg);
+    return st;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Map an open() failure from validateExistingFile's O_NOFOLLOW|O_NONBLOCK open
+ * into the friendly symlink refusal, or return the error unchanged for the caller
+ * to rethrow. Returns the error to throw rather than throwing so the mapping is a
+ * pure, directly-callable unit.
+ *
+ * This is redundant defence-in-depth, the same class as assertRegularDestination:
+ * on a static filesystem assertNoSymlinkComponents rejects a symlinked terminal
+ * component before open() is ever reached, so the ELOOP branch fires only in the
+ * TOCTOU window where a symlink is swapped in after the walk and before the open.
+ * That race is not deterministically reproducible in-process, so — mirroring the
+ * #9 fix that isolated assertRegularDestination — the mapping lives here as a
+ * mutation-observable unit with a direct test (see test/safe-writer.test.js). A
+ * future edit that drops the remap (rethrowing raw ELOOP) then fails that test
+ * instead of silently degrading the swapped-in-symlink message (issue #23).
+ */
+export function symlinkRefusalFor(err, absPath) {
+  if (err && err.code === "ELOOP") return filesystemError(`Refusing a symlink: ${absPath}`);
+  return err;
+}
+
+/**
  * Validate an existing regular file for managed update/retention: it must be a
  * regular (non-symlink) file owned by the effective user. When `secret` is
- * true, require mode 0600 and a 0700 immediate parent. Returns the stat.
+ * true, require mode 0600 and a 0700 immediate parent. Returns the fstat.
+ *
+ * The file is opened O_RDONLY|O_NOFOLLOW and validated via fstat on that open
+ * descriptor, not via a second lstat of the path: the object we check is
+ * provably the object the descriptor names, closing the TOCTOU window where a
+ * component is swapped between the path walk above and the check (issue #8).
+ * O_NOFOLLOW makes a symlinked terminal component fail atomically at open().
+ * assertNoSymlinkComponents still runs first because O_NOFOLLOW only guards the
+ * terminal component, not intermediate directories.
+ *
+ * O_NONBLOCK is required in addition to O_NOFOLLOW: O_NOFOLLOW rejects a symlink
+ * but a FIFO is not a symlink, so open(fifo, O_RDONLY) would block indefinitely
+ * waiting for a writer. O_NONBLOCK is a no-op for a regular file and makes a FIFO
+ * (or a device with no reader) fail promptly, so the "Not a regular file" check
+ * below is reached instead of the call hanging — matching the pre-fd lstat
+ * behaviour. validateSecretDir dodges this separately via O_DIRECTORY.
  */
 export function validateExistingFile(absPath, { secret = false } = {}) {
   requirePosix();
   assertNoSymlinkComponents(absPath);
-  const st = lstatSync(absPath);
-  if (st.isSymbolicLink()) throw filesystemError(`Refusing a symlink: ${absPath}`);
-  if (!st.isFile()) throw filesystemError(`Not a regular file: ${absPath}`);
-  if (st.uid !== process.getuid()) {
-    throw filesystemError(`File is not owned by the effective user: ${absPath}`);
+  let fd;
+  try {
+    fd = openSync(absPath, fsc.O_RDONLY | fsc.O_NOFOLLOW | fsc.O_NONBLOCK);
+  } catch (err) {
+    throw symlinkRefusalFor(err, absPath);
   }
-  if (secret) {
-    const perm = st.mode & 0o777;
-    if (perm !== 0o600) {
-      throw filesystemError(`Credential file must be mode 0600: ${absPath}`);
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) throw filesystemError(`Not a regular file: ${absPath}`);
+    if (st.uid !== process.getuid()) {
+      throw filesystemError(`File is not owned by the effective user: ${absPath}`);
     }
-    const parent = dirname(absPath);
-    const pst = lstatSync(parent);
-    if ((pst.mode & 0o777) !== 0o700) {
-      throw filesystemError(`Credential directory must be mode 0700: ${parent}`);
+    if (secret) {
+      const perm = st.mode & 0o777;
+      if (perm !== 0o600) {
+        throw filesystemError(`Credential file must be mode 0600: ${absPath}`);
+      }
+      const parent = dirname(absPath);
+      validateSecretDir(parent, {
+        badModeMsg: `Credential directory must be mode 0700: ${parent}`,
+        badOwnerMsg: `Credential directory is not owned by the effective user: ${parent}`,
+      });
     }
-    if (pst.uid !== process.getuid()) {
-      throw filesystemError(`Credential directory is not owned by the effective user: ${parent}`);
-    }
+    return st;
+  } finally {
+    closeSync(fd);
   }
-  return st;
+}
+
+/**
+ * Reject a destination that, at mutation time, is a symlink or a non-regular
+ * file. `existing` is the destination's lstat, or null when it is absent.
+ *
+ * This is DELIBERATE, redundant defence-in-depth — not dead code. On a static
+ * filesystem the symlink branch is already unreachable: assertNoSymlinkComponents
+ * walks and rejects a symlinked terminal component before atomicWrite ever lstats
+ * the destination, so removing this branch fails no attack test (that is exactly
+ * the coverage gap issue #9 was raised for). The branch exists only to close the
+ * TOCTOU window where a symlink is swapped in AFTER that walk and BEFORE the
+ * write. Do not delete it as "unreachable": it is exercised directly by a unit
+ * test (see test/safe-writer.test.js), so a future edit that breaks it is caught.
+ */
+export function assertRegularDestination(existing, absPath) {
+  if (existing && existing.isSymbolicLink()) {
+    throw filesystemError(`Refusing to overwrite a symlink: ${absPath}`);
+  }
+  if (existing && !existing.isFile()) {
+    throw filesystemError(`Refusing to overwrite a non-regular file: ${absPath}`);
+  }
 }
 
 /**
@@ -132,24 +229,20 @@ export function atomicWrite(absPath, content, { mode = 0o644, secret = false } =
   assertNoSymlinkComponents(absPath);
   const buf = Buffer.isBuffer(content) ? content : Buffer.from(String(content), "utf8");
   const dir = dirname(absPath);
-  // Re-validate the destination at mutation time to defeat a swapped component.
+  // Re-validate the destination at mutation time to defeat a component swapped in
+  // after assertNoSymlinkComponents walked the path. See assertRegularDestination
+  // for why this redundant guard is kept and how it is tested.
   let existing;
   try {
     existing = lstatSync(absPath);
   } catch {
     existing = null;
   }
-  if (existing && existing.isSymbolicLink()) {
-    throw filesystemError(`Refusing to overwrite a symlink: ${absPath}`);
-  }
-  if (existing && !existing.isFile()) {
-    throw filesystemError(`Refusing to overwrite a non-regular file: ${absPath}`);
-  }
+  assertRegularDestination(existing, absPath);
   if (secret) {
-    const pst = lstatSync(dir);
-    if ((pst.mode & 0o777) !== 0o700 || pst.uid !== process.getuid()) {
-      throw filesystemError(`Credential directory must be a private 0700 dir owned by you: ${dir}`);
-    }
+    // fd-based (fstat) re-check of the private parent directory (issue #8).
+    const msg = `Credential directory must be a private 0700 dir owned by you: ${dir}`;
+    validateSecretDir(dir, { badModeMsg: msg, badOwnerMsg: msg });
   }
   const tmp = join(dir, `.vbcdx-tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   let fd;

@@ -1,8 +1,9 @@
 // Provenance / one-time derivation helper (NOT part of the runtime package).
 //
 // Emits assets/roles/<id>/role.json for all sixteen canonical roles from an
-// explicit, reviewable capability table. After first generation these become
-// hand-maintained canonical descriptors (edit in place). The table below is
+// explicit, reviewable capability table. The table is the source of truth: CI
+// regenerates the descriptors and fails on any drift, so change a capability
+// here and re-run this script — never edit role.json by hand. The table below is
 // the reviewed capability assignment referenced by spec sections 2 and 6.1:
 // local file/shell permissions are separated from remote reporting/write
 // permissions, inspection roles carry no source-write or merge authority, and
@@ -37,6 +38,7 @@ const FORGEJO = {
   REVIEW: ["create_review"],
   CI_WRITE: ["set_commit_status", "dispatch_workflow"],
   MERGE: ["merge_pull_request"],
+  REPO_CREATE: ["create_repository"],
 };
 const COOLIFY = {
   READS: [
@@ -97,7 +99,7 @@ const T = {
   "devops-agent": {
     kind: "implementer", fs: "read-write", shell: true, web: true, delegation: false,
     sourceReadOnly: false, mayMerge: false, opencodeMode: "all",
-    forgejo: ["READS", "COMMENT", "PR_WRITE"], coolify: ["READS", "LIFECYCLE", "ENV_WRITE", "CREATE"],
+    forgejo: ["READS", "COMMENT", "PR_WRITE", "REPO_CREATE"], coolify: ["READS", "LIFECYCLE", "ENV_WRITE", "CREATE"],
   },
   "instructional-designer-agent": {
     kind: "author", fs: "read-only", shell: true, web: true, delegation: false,
@@ -112,7 +114,7 @@ const T = {
   "pm-agent": {
     kind: "coordinator", fs: "read-only", shell: true, web: false, delegation: true,
     sourceReadOnly: true, mayMerge: true, opencodeMode: "primary",
-    forgejo: ["READS", "ISSUE_FILE", "ISSUE_MANAGE", "COMMENT", "PR_WRITE", "MERGE"], coolify: ["READS"],
+    forgejo: ["READS", "ISSUE_FILE", "ISSUE_MANAGE", "COMMENT", "PR_WRITE", "MERGE", "REPO_CREATE"], coolify: ["READS"],
   },
   "qa-agent": {
     kind: "implementer", fs: "read-write", shell: true, web: false, delegation: false,

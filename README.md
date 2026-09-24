@@ -2,7 +2,7 @@
 
 Installer for the sixteen canonical VBCDX development agents. One canonical
 prompt and machine-readable role descriptor per role, rendered deterministically
-for **DSH**, **Claude Code**, **Codex**, and **OpenCode**. Installing useful
+for **DSH**, **Claude Code**, **Codex**, **OpenCode**, and **Hermes Agent**. Installing useful
 agents with **no service credentials at all** is a first-class, supported mode.
 
 This package does **not** install, register, start, or configure Forgejo,
@@ -28,7 +28,7 @@ This provides the `vbcdx-dev-agents` executable.
 ## Command
 
 ```
-vbcdx-dev-agents init --harness=<dsh|claude|codex|opencode> --env=<absolute-config-path>
+vbcdx-dev-agents init --harness=<dsh|claude|codex|opencode|hermes> --env=<absolute-config-path>
                       [--agents=<comma,separated,canonical,ids>]   # default: all sixteen
                       [--scope=<user|project>]                     # default: user (not for dsh)
                       [--profile=<name>]                           # dsh only, default: web
@@ -86,6 +86,7 @@ variables before starting the harness. The translations are:
 | `VBCDX_AGENTS_CLAUDE_CONFIG_DIR` | `CLAUDE_CONFIG_DIR` |
 | `VBCDX_AGENTS_CODEX_HOME` | `CODEX_HOME` |
 | `VBCDX_AGENTS_OPENCODE_CONFIG_DIR` | `OPENCODE_CONFIG_DIR` |
+| `VBCDX_AGENTS_HERMES_HOME` | `HERMES_HOME` |
 
 ### Claude Code
 
@@ -122,6 +123,66 @@ OPENCODE_CONFIG_DIR=/home/you/.config/opencode opencode
   directory — it does not disable your ordinary global/project OpenCode config,
   so definitions from both are merged. `pm-agent` and `all-in-one-dev-agent` use
   `primary` mode; the rest use `all` mode.
+
+### Hermes Agent
+
+```sh
+vbcdx-dev-agents init --harness=hermes --env=/abs/config.env
+HERMES_HOME=/home/you/.hermes hermes -p code-agent chat
+```
+
+Each role becomes a Hermes **profile** at `<HERMES_HOME>/profiles/<id>/` — its own
+agent with its own sessions, memory and `.env` — and appears in `hermes profile list`
+and in Hermes Web UI's profile switcher. `--scope` is rejected: profiles live only
+under `HERMES_HOME`.
+
+| File | Contents |
+| --- | --- |
+| `SOUL.md` | the canonical prompt plus the bound-service note |
+| `profile.yaml` | the role description (used by the Hermes kanban orchestrator) |
+| `config.yaml` | toolsets, optional model routing, and bound-service MCP entries |
+
+- **Toolsets** are enforced two ways:
+  - The role's allow-list goes in `platform_toolsets.<platform>` for **every** platform key a Hermes v0.15.1 gateway can resolve: 29 of them, including CLI, cron, `sms`, `msgraph_webhook` and the bundled plugin gateways (`teams`, `irc`, `google_chat`, `line`, `ntfy`, `simplex`). An unpinned platform falls back to its default composite, which includes browser, code execution and messaging.
+  - `agent.disabled_toolsets` lists every other known toolset. It also lists `feishu_doc` and `feishu_drive`, which Hermes adds back on the Feishu gateway after reading the allow-list.
+
+  Two exceptions:
+  - **`kanban`** is added back too, but deliberately not denied. Its tools are runtime-gated to dispatcher-spawned kanban workers, which need them to report back.
+  - **A toolset that shares a tool with an allowed one** stays off the deny-list, because Hermes subtracts a disabled toolset's tools by name. In v0.15.1 that is `browser`, which bundles `web`'s `web_search`. For web roles its legacy name `browser_tools` is denied instead, which removes 10 of browser's 12 tools but not `web_search`. The platform allow-lists keep the rest out.
+
+  **Residual:** on a **third-party** plugin gateway (not bundled, so not pinned), a web role could still get `browser_cdp` and `browser_dialog`.
+
+  **`hermes acp` is not covered at all** (#40). The editor integration builds its agent from Hermes' fixed `hermes-acp` toolset and passes neither list, so every role gets a shell, file writes and the full browser there. Only the MCP `tools.include` allow-lists apply. Don't use `hermes -p <role> acp` to run a restricted role.
+
+  A top-level `toolsets:` key does **not** restrict Hermes and is not emitted.
+
+  The toolset, platform, recovery, overlap and legacy lists are pinned to `test/fixtures/hermes-v0.15.1-toolsets.json`, which was generated from the upstream package. The tests simulate Hermes' resolver against it on every platform; regenerate it when upgrading.
+
+  `filesystem: read-only` is **advisory**: Hermes' `file` toolset bundles read and write.
+- **Model**: set `VBCDX_AGENTS_HERMES_BASE_URL` and `VBCDX_AGENTS_HERMES_MODEL` (optionally
+  `VBCDX_AGENTS_HERMES_MODEL_<SUFFIX>` per role) to render a named custom provider with
+  `key_env: HERMES_PROVIDER_API_KEY`. Without them profiles are written with no model
+  section and `init` warns. Environment variables alone (`OPENAI_BASE_URL`,
+  `HERMES_INFERENCE_*`) do not select a provider for a profile.
+- **MCP servers** — the one Hermes exception to "never edits harness MCP
+  configuration": Hermes loads MCP servers only from the profile's `config.yaml` and
+  enforces a per-server allow-list there, so for each **bound** role the profile gets
+  an `mcp_servers.<service>` entry with `tools.include` = exactly the bound tools.
+  Unbound roles get none. Stdio services use the companion's binary
+  (`vbcdx-forgejo mcp`, with `VBCDX_FORGEJO_URL`/`_WRITES` passed as `${VAR}` from the
+  profile's `.env`, because Hermes gives stdio servers a filtered environment); `http`
+  services render the `url` and `Authorization: Bearer ${VBCDX_FORGEJO_TOKEN}`.
+- **The profile's `.env` is operator-owned** and never written by this installer. It holds `HERMES_PROVIDER_API_KEY` and, for `http` services, the role's own `VBCDX_FORGEJO_TOKEN` / `VBCDX_COOLIFY_TOKEN`.
+  - **Every bound profile's `.env` must set its own token.** Hermes loads the `.env` over the process environment, but a variable *missing* from it falls through to whatever the Hermes process (or container) has. A profile without its own token would silently act as that identity.
+  - Hermes Web UI switches profiles inside one long-running process, so keep tokens out of that process's environment.
+  - A `${VAR}` that can't be resolved is passed on literally. The companions treat a literal `${VBCDX_FORGEJO_WRITES}` as an invalid mode, which means `off`, and a literal `Bearer ${VBCDX_FORGEJO_TOKEN}` fails authentication. Both fail closed.
+- **Hermes Web UI runs agents inside its own container**, which typically has no
+  Node.js and mounts `HERMES_HOME` at a different path than the agent container. Use
+  an `http` service there (see *Integrations*); stdio + `credential_file` works for the
+  Hermes CLI, gateway and kanban workers.
+- Profiles are **not a sandbox** (Hermes docs): every profile shares the host
+  filesystem, so one profile's shell can read another's `.env` or credential file —
+  as with the other harnesses on one host.
 
 ### DSH (staged, then booted)
 
@@ -200,6 +261,28 @@ path:
   (`USER`/`PASSWORD` are ignored by that service). A mapping alone never creates
   a credential file; the installer either writes the planned file or validates a
   separately provisioned one read-only.
+- **Network transport.** A service may instead set `"transport": "http"` with a `url`
+  and an explicit `"roles"` list (no `credentials`): the companion's network mode
+  (`vbcdx-forgejo serve`), reached directly or through an MCP gateway, where each
+  caller presents its own identity in a header and no credential file exists. A
+  gateway that namespaces tools (LiteLLM lists them as `Forgejo-<tool>`) needs
+  `"tool_prefix": "Forgejo-"` so rendered allow-lists match (letters, digits, `_` and `-`
+  only). The bound-service note then tells the model not to pass `credential_file`.
+  Every call sends a bearer token to that `url`. A plain `http:` URL to a non-loopback host is
+  **rejected** unless the service sets `"allow_cleartext": true`, and even then `init` warns.
+  That combination is meant for a private container network, e.g. `http://forgejo-mcp:8080/mcp`;
+  use `https:` anywhere else. Loopback addresses need no opt-in.
+
+  ```json
+  "forgejo": {
+    "server_name": "forgejo",
+    "manifest_file": "/home/you/.config/vbcdx/manifests/forgejo.json",
+    "transport": "http",
+    "url": "https://gateway.example/mcp/Forgejo",
+    "tool_prefix": "Forgejo-",
+    "roles": ["code-agent", "review-agent"]
+  }
+  ```
 - After adding or changing an integration, rerun `init` explicitly. Generated
   bindings are reported as offline-rendered; runtime MCP `tools/list` schemas and
   native names are verified separately (see *Runtime verification*).
@@ -212,6 +295,7 @@ path:
 | Claude (user / project) | `<CLAUDE_CONFIG_DIR>/agents/<id>.md` / `<worktree>/.claude/agents/<id>.md` |
 | Codex (user / project) | `<CODEX_HOME>/agents/<id>.toml` / `<worktree>/.codex/agents/<id>.toml` |
 | OpenCode (user / project) | `<OPENCODE_CONFIG_DIR>/agents/<id>.md` / `<worktree>/.opencode/agents/<id>.md` |
+| Hermes (user only) | `<HERMES_HOME>/profiles/<id>/{SOUL.md,profile.yaml,config.yaml}` |
 
 ## Updates and conflicts
 
@@ -269,6 +353,13 @@ Canonical prompts and role descriptors under `assets/roles/` are the single
 source of truth; the four renderers derive from them deterministically.
 `scripts/derive-*.mjs` document how the assets were ported from
 `VBCDX/dsh-agents` and are not part of the published runtime.
+
+CI (`.forgejo/workflows/ci.yml`) runs on a self-hosted runner chosen by the
+`CI_RUNNER_LABEL` repository (or org) variable, so the runner's label is not
+baked into the published source. If you fork this repo and run its Forgejo
+workflows, set `CI_RUNNER_LABEL` to a label your runner advertises (for a
+GitHub-parity self-hosted runner, `self-hosted`). If it is left unset the jobs
+are silently skipped — an empty `runs-on` matches no runner.
 
 ## License
 

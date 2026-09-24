@@ -9,12 +9,14 @@
 
 import { isAbsolute } from "node:path";
 import { configError } from "../errors.js";
+import { isCanonicalId, normalizeSuffix } from "../roles/registry.js";
 
 const HARNESS_ROOT_KEY = {
   dsh: "VBCDX_AGENTS_DSH_HOME",
   claude: "VBCDX_AGENTS_CLAUDE_CONFIG_DIR",
   codex: "VBCDX_AGENTS_CODEX_HOME",
   opencode: "VBCDX_AGENTS_OPENCODE_CONFIG_DIR",
+  hermes: "VBCDX_AGENTS_HERMES_HOME",
 };
 
 export const LAUNCH_ENV_TRANSLATION = Object.freeze({
@@ -22,6 +24,7 @@ export const LAUNCH_ENV_TRANSLATION = Object.freeze({
   VBCDX_AGENTS_CLAUDE_CONFIG_DIR: "CLAUDE_CONFIG_DIR",
   VBCDX_AGENTS_CODEX_HOME: "CODEX_HOME",
   VBCDX_AGENTS_OPENCODE_CONFIG_DIR: "OPENCODE_CONFIG_DIR",
+  VBCDX_AGENTS_HERMES_HOME: "HERMES_HOME",
 });
 
 const SCALAR_KEYS = new Set([
@@ -31,12 +34,17 @@ const SCALAR_KEYS = new Set([
   "VBCDX_AGENTS_CLAUDE_CONFIG_DIR",
   "VBCDX_AGENTS_CODEX_HOME",
   "VBCDX_AGENTS_OPENCODE_CONFIG_DIR",
+  "VBCDX_AGENTS_HERMES_HOME",
+  "VBCDX_AGENTS_HERMES_BASE_URL",
+  "VBCDX_AGENTS_HERMES_MODEL",
   "VBCDX_AGENTS_CODE_HOST_URL",
   "VBCDX_AGENTS_INTEGRATIONS_FILE",
   "VBCDX_AGENTS_WORKDIR",
 ]);
 
 const CREDENTIAL_KEY_RE = /^VBCDX_AGENTS_(USER|TOKEN|PASSWORD)_.+$/;
+// Optional per-role Hermes model override: VBCDX_AGENTS_HERMES_MODEL_<SUFFIX>.
+const HERMES_ROLE_MODEL_RE = /^VBCDX_AGENTS_HERMES_MODEL_(.+)$/;
 const PATH_KEYS = new Set([
   "VBCDX_AGENTS_BASE_DIR",
   "VBCDX_AGENTS_CREDENTIALS_DIR",
@@ -44,6 +52,7 @@ const PATH_KEYS = new Set([
   "VBCDX_AGENTS_CLAUDE_CONFIG_DIR",
   "VBCDX_AGENTS_CODEX_HOME",
   "VBCDX_AGENTS_OPENCODE_CONFIG_DIR",
+  "VBCDX_AGENTS_HERMES_HOME",
   "VBCDX_AGENTS_INTEGRATIONS_FILE",
 ]);
 
@@ -84,6 +93,7 @@ export function loadConfig(entries, { harness, scope }) {
     if (!key.startsWith("VBCDX_AGENTS_")) continue; // unrelated key: ignored, value not logged
     if (SCALAR_KEYS.has(key)) continue;
     if (CREDENTIAL_KEY_RE.test(key)) continue;
+    if (HERMES_ROLE_MODEL_RE.test(key)) continue;
     throw configError(`Unsupported configuration key ${key}. Check for a typo; unknown VBCDX_AGENTS_ keys are rejected.`);
   }
 
@@ -117,9 +127,12 @@ export function loadConfig(entries, { harness, scope }) {
     }
   }
 
+  const hermes = harness === "hermes" ? loadHermesRouting(entries) : null;
+
   return {
     harness,
     scope,
+    hermes,
     baseDir,
     credentialsDir,
     harnessRoot,
@@ -131,4 +144,40 @@ export function loadConfig(entries, { harness, scope }) {
         ? { [LAUNCH_ENV_TRANSLATION[rootKey]]: entries.get(rootKey) }
         : {},
   };
+}
+
+// A model name is a single token: it is written verbatim into a YAML scalar.
+const MODEL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/;
+
+/**
+ * Optional, nonsecret Hermes model routing (hermes harness only). Hermes
+ * profiles cannot run without a model section, so the renderer emits one when
+ * VBCDX_AGENTS_HERMES_BASE_URL and a model are configured; the API key is never
+ * accepted here — the profile reads it from its own operator-owned .env via
+ * key_env. Returns null when no routing is configured.
+ */
+export function loadHermesRouting(entries) {
+  const baseUrl = entries.get("VBCDX_AGENTS_HERMES_BASE_URL") || "";
+  const model = entries.get("VBCDX_AGENTS_HERMES_MODEL") || "";
+  const roleModels = {};
+  for (const [key, value] of entries) {
+    const m = HERMES_ROLE_MODEL_RE.exec(key);
+    if (!m || !value) continue;
+    const id = normalizeSuffix(m[1]);
+    if (!isCanonicalId(id)) throw configError(`${key} does not name a canonical agent (unknown suffix ${m[1]}).`);
+    if (!MODEL_NAME_RE.test(value)) throw configError(`${key} is not a valid model name.`);
+    roleModels[id] = value;
+  }
+  if (model && !MODEL_NAME_RE.test(model)) throw configError("VBCDX_AGENTS_HERMES_MODEL is not a valid model name.");
+  if (!baseUrl) {
+    if (model || Object.keys(roleModels).length) {
+      throw configError("VBCDX_AGENTS_HERMES_MODEL(_<ROLE>) requires VBCDX_AGENTS_HERMES_BASE_URL.");
+    }
+    return null;
+  }
+  validateServiceUrl("VBCDX_AGENTS_HERMES_BASE_URL", baseUrl);
+  if (!model && Object.keys(roleModels).length === 0) {
+    throw configError("VBCDX_AGENTS_HERMES_BASE_URL requires VBCDX_AGENTS_HERMES_MODEL or a per-role VBCDX_AGENTS_HERMES_MODEL_<ROLE>.");
+  }
+  return { baseUrl, model: model || null, roleModels };
 }

@@ -131,7 +131,7 @@ Post `[agent-update]` comments on the issue at each milestone, AS each is reache
 
 ## Tools posture
 
-`git` and the file system are read-only context surfaces (unless writing curriculum files on an issue branch as assigned). External verification of framework citations, pedagogical patterns, and tool capabilities happens via bash `curl` — the web-search tool is intentionally disabled for this role. The code-host API posts deliverables.
+`git` and the file system are read-only context surfaces (unless writing curriculum files on an issue branch as assigned). External verification of framework citations, pedagogical patterns, and tool capabilities happens with the web-search and web-fetch tools — cite the URL for every external claim. The code-host API posts deliverables.
 
 ## Service access (Forgejo, Coolify, and other MCP servers)
 

@@ -18,11 +18,15 @@
 // publishes their cards for discovery, it does not run the agents. A2A 1.0 has
 // no descriptive-only card mode and REQUIRES a non-empty supportedInterfaces, so
 // each card advertises exactly one interface whose url is the card's own
-// resolvable HTTPS location with an HTTP+JSON binding, and capabilities is empty
-// (no streaming/pushNotifications/etc. are implemented). A client that POSTs an
-// A2A message to that url will not get a task back — that is the documented
-// residual gap; a fully callable per-agent endpoint (spec `tenant` routing) is a
-// separate, larger scope.
+// resolvable HTTPS location with an HTTP+JSON binding. A client that POSTs an
+// A2A message to that url gets a 405, not a task — the documented residual gap;
+// a fully callable per-agent endpoint (spec `tenant` routing) is separate scope.
+//
+// So a consumer that fetches a single card learns this too (issue #13), each card
+// discloses the discovery-only nature both in prose (a trailing sentence on the
+// description) and structurally (a non-required AgentExtension in capabilities).
+// capabilities still carries NO real-behaviour flag — no streaming,
+// pushNotifications, or extendedAgentCard is implemented, so none is advertised.
 
 import { allRoles, getRole } from "../roles/index.js";
 import { CANONICAL_IDS } from "../roles/registry.js";
@@ -40,6 +44,44 @@ const PROVIDER_ORGANIZATION = "VBCDX";
 // Modes the agents work in. They consume and produce natural-language text.
 const DEFAULT_INPUT_MODES = Object.freeze(["text/plain"]);
 const DEFAULT_OUTPUT_MODES = Object.freeze(["text/plain"]);
+
+// Discovery-only disclosure (issue #13). A consumer that fetches only a single
+// per-agent card — the documented, primary way to consume this — must be able to
+// tell, from that response alone, that the advertised interface is for discovery
+// and not a live A2A message endpoint (a POST to that url returns 405). We
+// surface this two ways so neither audience is left guessing:
+//   - a trailing sentence appended to each card's human-readable description, and
+//   - a non-required AgentExtension in capabilities, so a machine consumer can
+//     detect it structurally instead of parsing prose.
+const DISCOVERY_ONLY_NOTE = "Discovery card only; not a live A2A message endpoint.";
+
+// Stable identifier for the discovery-only extension. Deliberately a URN, not a
+// resolvable URL: the whole point of this card is to avoid advertising URLs that
+// do not behave the way a URL implies, so the extension is identified by name,
+// not by a locator. Kept generic and host-neutral — this package is public.
+const DISCOVERY_ONLY_EXTENSION_URI = "urn:a2a:extension:discovery-only";
+
+// The AgentExtension declaring the card is discovery-only. This is a truthful
+// statement ABOUT the card, not a claim to implement a protocol feature, so
+// adding it does not compromise the "advertise no capability we do not
+// implement" property — streaming/pushNotifications/extendedAgentCard stay unset.
+// required:false — a consumer need NOT understand this extension to read the card.
+function discoveryOnlyExtension() {
+  return {
+    uri: DISCOVERY_ONLY_EXTENSION_URI,
+    description:
+      "This interface is discovery-only: the card describes an agent role and " +
+      "prompt definition, it is not a live A2A message endpoint. Sending an A2A " +
+      "message to the advertised url returns 405 Method Not Allowed.",
+    required: false,
+  };
+}
+
+// Append the discovery-only note to the role description. Trailing whitespace is
+// trimmed first so the sentence joins cleanly regardless of the source text.
+function cardDescription(descriptor) {
+  return `${descriptor.description.trimEnd()} ${DISCOVERY_ONLY_NOTE}`;
+}
 
 // Remote-capability service keys are mapped to GENERIC, vendor-neutral skill
 // tags — never the vendor name itself — to keep cards free of internal infra
@@ -101,7 +143,7 @@ export function buildAgentCard(role, baseUrl) {
   const cardUrl = `${base}/agents/${descriptor.id}.json`;
   return {
     name: descriptor.name,
-    description: descriptor.description,
+    description: cardDescription(descriptor),
     version: cardVersion(descriptor),
     provider: { organization: PROVIDER_ORGANIZATION, url: base },
     documentationUrl: `${base}/agents/`,
@@ -112,7 +154,9 @@ export function buildAgentCard(role, baseUrl) {
         protocolVersion: A2A_PROTOCOL_VERSION,
       },
     ],
-    capabilities: {},
+    // Only the discovery-only extension — a truthful statement about the card.
+    // No streaming/pushNotifications/extendedAgentCard: we implement none.
+    capabilities: { extensions: [discoveryOnlyExtension()] },
     defaultInputModes: [...DEFAULT_INPUT_MODES],
     defaultOutputModes: [...DEFAULT_OUTPUT_MODES],
     skills: [roleSkill(descriptor)],

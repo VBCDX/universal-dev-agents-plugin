@@ -7,6 +7,7 @@ import { renderClaude } from "../src/renderers/claude.js";
 import { renderCodex } from "../src/renderers/codex.js";
 import { renderOpencode } from "../src/renderers/opencode.js";
 import { renderDsh } from "../src/renderers/dsh.js";
+import { renderHermes } from "../src/renderers/hermes.js";
 import { CANONICAL_IDS } from "../src/roles/registry.js";
 
 function splitFrontmatter(md) {
@@ -105,7 +106,7 @@ test("bound service tools render only when an integration maps the role", () => 
 test("no rendered definition leaks a forbidden infra token", () => {
   const roles = [...allRoles().values()];
   for (const role of roles) {
-    for (const out of [renderClaude(role), renderCodex(role), renderOpencode(role)]) {
+    for (const out of [renderClaude(role), renderCodex(role), renderOpencode(role), ...renderHermes(role).files]) {
       assert.doesNotMatch(out.content, /CODE_HOST_/);
       assert.doesNotMatch(out.content, /\$DSH_HOME/);
     }

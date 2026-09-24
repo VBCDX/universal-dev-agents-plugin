@@ -51,7 +51,7 @@ export const SOURCE_TO_CANONICAL = Object.freeze({
   "video-creator": "video-creator",
 });
 
-export const HARNESSES = Object.freeze(["dsh", "claude", "codex", "opencode"]);
+export const HARNESSES = Object.freeze(["dsh", "claude", "codex", "opencode", "hermes"]);
 
 /** Convert a canonical ID to its credential suffix. */
 export function idToSuffix(id) {

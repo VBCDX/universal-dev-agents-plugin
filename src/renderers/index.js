@@ -5,6 +5,7 @@ import { renderClaude } from "./claude.js";
 import { renderCodex } from "./codex.js";
 import { renderOpencode } from "./opencode.js";
 import { renderDsh } from "./dsh.js";
+import { renderHermes } from "./hermes.js";
 import { configError } from "../errors.js";
 
 // Native per-harness/scope destination directory for the flat-file harnesses.
@@ -30,4 +31,10 @@ export function renderFlat(harness, role, ctx) {
   throw configError(`Unknown flat-file harness: ${harness}`);
 }
 
-export { renderClaude, renderCodex, renderOpencode, renderDsh };
+/** Hermes profile directory for a role: <HERMES_HOME>/profiles/<id>. */
+export function resolveHermesProfileDir(hermesHome, roleId) {
+  if (!hermesHome) throw configError("Hermes requires the HERMES_HOME configuration root.");
+  return join(hermesHome, "profiles", roleId);
+}
+
+export { renderClaude, renderCodex, renderOpencode, renderDsh, renderHermes };
